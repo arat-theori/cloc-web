@@ -1,0 +1,15 @@
+services:
+  cloc-web:
+    container_name: cloc-web
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # cloc-rs lives in a sibling directory (../cloc-rs). The named
+      # context lets the Dockerfile COPY from outside the primary build
+      # context without restructuring the repo. Override via:
+      #   CLOC_RS_PATH=/abs/path docker compose build
+      additional_contexts:
+        cloc-rs: ${CLOC_RS_PATH:-../cloc-rs}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

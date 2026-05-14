@@ -1,0 +1,21 @@
+node_modules
+.next
+out
+.git
+.gitignore
+.claude
+.vscode
+.idea
+.DS_Store
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
+tsconfig.tsbuildinfo
+
+# cloc-rs is included via the named build context, not the main context.
+cloc-rs
+
+# public/wasm gets replaced with a freshly compiled copy in Stage 2.
+public/wasm

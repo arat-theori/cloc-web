@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+.DS_Store
+*.log
+.env*.local
+tsconfig.tsbuildinfo
+
+# Editor / agent configs
+.claude/
+.vscode/
+.idea/
+
+# cloc-rs is a separate repo; its WASM output is regenerated at build
+# time (Docker compiles it; for local `npm run dev`, run wasm-pack first).
+/cloc-rs/
+/public/wasm/
