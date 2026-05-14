@@ -56,14 +56,21 @@ const addCounts = (a: LineCounts, b: LineCounts): LineCounts => ({
   code: a.code + b.code,
 });
 
-async function sha1Hex(s: string): Promise<string> {
-  // crypto.subtle.digest accepts a buffer; encode once.
-  const buf = new TextEncoder().encode(s);
-  const hash = await crypto.subtle.digest("SHA-1", buf);
-  const bytes = new Uint8Array(hash);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-  return hex;
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const U64_MASK = 0xffffffffffffffffn;
+
+// FNV-1a 64-bit over the UTF-8 bytes of `s`. Used for cloc-style dedup —
+// same hash cloc-rs uses internally. Pure JS (no `crypto.subtle`) so it
+// works in non-secure contexts (e.g. Docker reached over plain HTTP from
+// a non-localhost address, where `crypto.subtle` is `undefined`).
+function contentHash(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let h = FNV_OFFSET;
+  for (let i = 0; i < bytes.length; i++) {
+    h = (h ^ BigInt(bytes[i])) * FNV_PRIME & U64_MASK;
+  }
+  return h.toString(16);
 }
 
 export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Promise<ClocResult> {
@@ -178,7 +185,7 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
         continue;
       }
       // Bucket by content hash within the size group.
-      const hashes = await Promise.all(list.map((c) => sha1Hex(c.content)));
+      const hashes = list.map((c) => contentHash(c.content));
       const byHash = new Map<string, Counted[]>();
       list.forEach((c, idx) => {
         const h = hashes[idx];
