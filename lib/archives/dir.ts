@@ -63,15 +63,23 @@ export async function entriesFromDirectoryEntry(
       return;
     }
     if (entry.isDirectory) {
+      // Drain the directory reader BEFORE recursing into any child. Chrome's
+      // FileSystemDirectoryReader returns batches of up to ~100 entries per
+      // readEntries() call and tracks its position internally — if we
+      // interleave child-directory walks (each creating their own readers)
+      // with parent reads, the parent reader's iteration silently desyncs
+      // and whole subtrees go missing (observed on the Linux kernel:
+      // include/dt-bindings/ disappeared, ~1.4K headers lost).
       const reader = (entry as FileSystemDirectoryEntry).createReader();
-      // readEntries returns batches of up to 100; keep calling until empty.
+      const children: FileSystemEntry[] = [];
       while (true) {
         const batch: FileSystemEntry[] = await new Promise((resolve, reject) =>
           reader.readEntries(resolve, reject),
         );
         if (batch.length === 0) break;
-        for (const child of batch) await visit(child, here);
+        children.push(...batch);
       }
+      for (const child of children) await visit(child, here);
     }
   }
 
