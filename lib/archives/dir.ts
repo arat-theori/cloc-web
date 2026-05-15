@@ -96,6 +96,74 @@ export async function entriesFromDirectoryEntry(
 }
 
 /**
+ * Walk a `FileSystemDirectoryHandle` (from `showDirectoryPicker()`). This is
+ * the modern File System Access API path — Chromium-only today but far
+ * more reliable than `<input webkitdirectory>` on large trees, which
+ * Chrome can silently truncate. Same lazy contract: each FileEntry only
+ * fetches its underlying File when `read()` is called.
+ */
+export async function entriesFromDirectoryHandle(
+  rootHandle: FileSystemDirectoryHandle,
+): Promise<FileEntry[]> {
+  const out: FileEntry[] = [];
+
+  async function visit(
+    handle: FileSystemDirectoryHandle,
+    parentPath: string,
+  ): Promise<void> {
+    const here = parentPath ? `${parentPath}/${handle.name}` : handle.name;
+    // `values()` yields all children of the directory without the
+    // batched-reader quirks that bite webkitGetAsEntry on big trees.
+    // Drain the iterator into a list before recursing — same caution as
+    // the legacy walker, in case the handle's iterator has any internal
+    // state that the API doesn't promise to keep stable across awaits.
+    // TS DOM lib doesn't declare values() yet, but it's standard.
+    type IterableHandle = FileSystemDirectoryHandle & {
+      values: () => AsyncIterableIterator<FileSystemHandle>;
+    };
+    const children: FileSystemHandle[] = [];
+    for await (const child of (handle as IterableHandle).values()) {
+      children.push(child);
+    }
+    for (const child of children) {
+      if (child.kind === "file") {
+        const fileHandle = child as FileSystemFileHandle;
+        const file = await fileHandle.getFile();
+        out.push(fileToEntry(file, `${here}/${child.name}`));
+      } else if (child.kind === "directory") {
+        await visit(child as FileSystemDirectoryHandle, here);
+      }
+    }
+  }
+
+  await visit(rootHandle, "");
+  return out;
+}
+
+/**
+ * Open the modern directory picker if the browser supports it. Returns
+ * `null` if the API is unavailable (then callers fall back to the
+ * `<input webkitdirectory>` flow). Throws `AbortError` if the user
+ * dismisses the picker — caller decides whether to surface that.
+ */
+export async function pickDirectory(): Promise<
+  { entries: FileEntry[]; rootName: string } | null
+> {
+  type WithPicker = Window & {
+    showDirectoryPicker?: (opts?: { id?: string; mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
+  };
+  const w = (typeof window !== "undefined" ? window : null) as WithPicker | null;
+  if (!w?.showDirectoryPicker) return null;
+  const handle = await w.showDirectoryPicker({ mode: "read" });
+  const entries = await entriesFromDirectoryHandle(handle);
+  if (typeof window !== "undefined") {
+    // eslint-disable-next-line no-console
+    console.info(`[cloc-web] showDirectoryPicker enumerated ${entries.length} files`);
+  }
+  return { entries, rootName: handle.name };
+}
+
+/**
  * Best-effort: pull entries out of a DataTransfer drop. Falls back to the
  * flat `files` list if `webkitGetAsEntry` isn't available.
  *

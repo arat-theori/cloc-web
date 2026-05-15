@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { FileEntry } from "@/lib/cloc";
-import { entriesFromDataTransfer, entriesFromFileList } from "@/lib/archives/dir";
+import { entriesFromDataTransfer, entriesFromFileList, pickDirectory } from "@/lib/archives/dir";
 
 type Source =
   | { kind: "archive"; file: File }
@@ -37,6 +37,24 @@ export function DropZone({ onSource, disabled }: Props) {
     },
     [onSource],
   );
+
+  const handleBrowseFolder = useCallback(async () => {
+    if (disabled) return;
+    // Prefer the modern File System Access API — Chrome's legacy
+    // <input webkitdirectory> can silently truncate large trees.
+    try {
+      const picked = await pickDirectory();
+      if (picked) {
+        onSource({ kind: "directory", entries: picked.entries, rootName: picked.rootName });
+        return;
+      }
+    } catch (e) {
+      // User dismissed showDirectoryPicker. Treat as no-op.
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      // Other errors fall through to the legacy input below.
+    }
+    folderInputRef.current?.click();
+  }, [disabled, onSource]);
 
   const handleDrop = useCallback(
     async (dt: DataTransfer) => {
@@ -111,7 +129,7 @@ export function DropZone({ onSource, disabled }: Props) {
           </button>
           <button
             type="button"
-            onClick={() => !disabled && folderInputRef.current?.click()}
+            onClick={() => void handleBrowseFolder()}
             className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
           >
             Browse folder…
