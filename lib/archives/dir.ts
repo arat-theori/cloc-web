@@ -38,6 +38,13 @@ export function entriesFromFileList(files: FileList): FileEntry[] {
     const rel = (f as unknown as { webkitRelativePath?: string }).webkitRelativePath;
     out.push(fileToEntry(f, rel && rel.length > 0 ? rel : f.name));
   }
+  // Diagnostic: surface what the browser actually enumerated so a silently
+  // truncated FileList shows up immediately. Chrome's <input webkitdirectory>
+  // can drop files in very large trees with no error.
+  if (typeof window !== "undefined") {
+    // eslint-disable-next-line no-console
+    console.info(`[cloc-web] picker enumerated ${out.length} files`);
+  }
   return out;
 }
 
@@ -50,8 +57,9 @@ export async function entriesFromDirectoryEntry(
   rootEntry: FileSystemDirectoryEntry,
 ): Promise<FileEntry[]> {
   const out: FileEntry[] = [];
-  const rootPrefix = rootEntry.name;
 
+  // Start with parentPath = "" so the root contributes its name once.
+  // Without this we'd produce "<root>/<root>/<child>/..." paths.
   async function visit(entry: FileSystemEntry, parentPath: string): Promise<void> {
     const here = parentPath ? `${parentPath}/${entry.name}` : entry.name;
     if (entry.isFile) {
@@ -83,7 +91,7 @@ export async function entriesFromDirectoryEntry(
     }
   }
 
-  await visit(rootEntry, rootPrefix);
+  await visit(rootEntry, "");
   return out;
 }
 
