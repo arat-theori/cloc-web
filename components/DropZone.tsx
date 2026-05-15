@@ -1,22 +1,62 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import type { FileEntry } from "@/lib/cloc";
+import { entriesFromDataTransfer, entriesFromFileList } from "@/lib/archives/dir";
+
+type Source =
+  | { kind: "archive"; file: File }
+  | { kind: "directory"; entries: FileEntry[]; rootName: string };
 
 type Props = {
-  onFile: (file: File) => void;
+  onSource: (source: Source) => void;
   disabled?: boolean;
 };
 
-export function DropZone({ onFile, disabled }: Props) {
+export function DropZone({ onSource, disabled }: Props) {
   const [over, setOver] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFiles = useCallback(
+  const handleArchiveInput = useCallback(
     (files: FileList | null) => {
       if (!files || files.length === 0) return;
-      onFile(files[0]);
+      onSource({ kind: "archive", file: files[0] });
     },
-    [onFile],
+    [onSource],
+  );
+
+  const handleFolderInput = useCallback(
+    (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      const entries = entriesFromFileList(files);
+      // The first segment of webkitRelativePath is the dropped folder name.
+      const first = (files[0] as unknown as { webkitRelativePath?: string }).webkitRelativePath ?? "";
+      const rootName = first.split("/")[0] || "directory";
+      onSource({ kind: "directory", entries, rootName });
+    },
+    [onSource],
+  );
+
+  const handleDrop = useCallback(
+    async (dt: DataTransfer) => {
+      const picked = await entriesFromDataTransfer(dt);
+      if (!picked) return;
+      // Single file + recognized archive extension → treat as archive (uses
+      // the zip/tar streaming path). Anything else (multiple files, or a
+      // single non-archive file, or a directory) goes through the per-file
+      // reader path.
+      if (
+        picked.entries.length === 1 &&
+        /\.(zip|tar|tar\.gz|tgz)$/i.test(picked.entries[0].path) &&
+        dt.files.length === 1
+      ) {
+        onSource({ kind: "archive", file: dt.files[0] });
+        return;
+      }
+      onSource({ kind: "directory", entries: picked.entries, rootName: picked.rootName });
+    },
+    [onSource],
   );
 
   return (
@@ -31,28 +71,55 @@ export function DropZone({ onFile, disabled }: Props) {
         if (disabled) return;
         e.preventDefault();
         setOver(false);
-        handleFiles(e.dataTransfer.files);
+        void handleDrop(e.dataTransfer);
       }}
-      onClick={() => !disabled && inputRef.current?.click()}
       className={[
-        "group relative cursor-pointer rounded-lg border border-dashed p-8 transition-colors",
+        "group relative rounded-lg border border-dashed p-8 transition-colors",
         over ? "border-accent bg-accent/5" : "border-border hover:border-neutral-500",
         disabled ? "pointer-events-none opacity-50" : "",
       ].join(" ")}
     >
       <input
-        ref={inputRef}
+        ref={archiveInputRef}
         type="file"
         accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => handleArchiveInput(e.target.files)}
       />
-      <div className="flex flex-col items-center gap-2 text-center">
+      <input
+        ref={folderInputRef}
+        type="file"
+        // The non-standard `webkitdirectory` attribute opens a folder picker
+        // in Chromium / Firefox / Safari — typing as `any` keeps React happy.
+        {...({ webkitdirectory: "" } as Record<string, string>)}
+        multiple
+        className="hidden"
+        onChange={(e) => handleFolderInput(e.target.files)}
+      />
+      <div className="flex flex-col items-center gap-3 text-center">
         <UploadIcon className="h-8 w-8 text-neutral-400 group-hover:text-neutral-200" />
         <div className="text-sm text-neutral-300">
-          <span className="font-medium text-neutral-100">Drop an archive</span> or click to browse
+          <span className="font-medium text-neutral-100">Drop an archive or folder</span>
         </div>
-        <div className="text-xs text-neutral-500">.zip · .tar · .tar.gz · .tgz</div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => !disabled && archiveInputRef.current?.click()}
+            className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
+          >
+            Browse archive…
+          </button>
+          <button
+            type="button"
+            onClick={() => !disabled && folderInputRef.current?.click()}
+            className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
+          >
+            Browse folder…
+          </button>
+        </div>
+        <div className="text-xs text-neutral-500">
+          .zip · .tar · .tar.gz · .tgz · or any directory
+        </div>
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ import { ResultsTable } from "@/components/ResultsTable";
 import { StackedBar } from "@/components/StackedBar";
 import { SummaryCards } from "@/components/SummaryCards";
 import { extractArchive } from "@/lib/archives";
-import { clocFiles, type ClocResult } from "@/lib/cloc";
+import { clocFiles, type ClocResult, type FileEntry } from "@/lib/cloc";
 import { listGitHubFiles, parseGitHubUrl } from "@/lib/github";
 
 type Phase =
@@ -29,25 +29,50 @@ export default function Page() {
     setPhase({ kind: "idle" });
   }, []);
 
-  const runOnFile = useCallback(async (file: File) => {
-    try {
-      setPhase({ kind: "extracting", label: `Reading ${file.name}` });
-      const buffer = await file.arrayBuffer();
-      const entries = await extractArchive(file.name, buffer);
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setPhase({ kind: "counting", processed: 0, total: entries.length });
-      const result = await clocFiles(entries, {
-        signal: controller.signal,
-        concurrency: 8,
-        onProgress: (p) =>
-          setPhase({ kind: "counting", processed: p.processed, total: p.total, currentPath: p.currentPath }),
-      });
-      setPhase({ kind: "done", result, source: file.name });
-    } catch (err) {
-      setPhase({ kind: "error", message: errorMessage(err) });
-    }
+  const runOnEntries = useCallback(async (entries: FileEntry[], source: string, concurrency: number) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setPhase({ kind: "counting", processed: 0, total: entries.length });
+    const result = await clocFiles(entries, {
+      signal: controller.signal,
+      concurrency,
+      onProgress: (p) =>
+        setPhase({ kind: "counting", processed: p.processed, total: p.total, currentPath: p.currentPath }),
+    });
+    setPhase({ kind: "done", result, source });
   }, []);
+
+  const runOnSource = useCallback(
+    async (src:
+      | { kind: "archive"; file: File }
+      | { kind: "directory"; entries: FileEntry[]; rootName: string }) => {
+      try {
+        if (src.kind === "archive") {
+          setPhase({ kind: "extracting", label: `Reading ${src.file.name}` });
+          // Browsers cap a single ArrayBuffer well under typical archive
+          // sizes (Chrome 64-bit refuses around 2 GiB). Catch obviously-huge
+          // uploads here so we can suggest the directory picker instead of
+          // letting `arrayBuffer()` fail with a confusing NotReadableError.
+          if (src.file.size > 1.5 * 1024 * 1024 * 1024) {
+            throw new Error(
+              `Archive is ${formatBytes(src.file.size)} — too large to load into a browser ArrayBuffer. ` +
+                `Unpack it and drop the folder instead, or use the GitHub URL input.`,
+            );
+          }
+          const buffer = await src.file.arrayBuffer();
+          const entries = await extractArchive(src.file.name, buffer);
+          await runOnEntries(entries, src.file.name, 8);
+        } else {
+          // Per-file reads scale with file count, not total bytes, so a
+          // higher concurrency is safe.
+          await runOnEntries(src.entries, src.rootName, 16);
+        }
+      } catch (err) {
+        setPhase({ kind: "error", message: errorMessage(err) });
+      }
+    },
+    [runOnEntries],
+  );
 
   const runOnUrl = useCallback(async (url: string) => {
     try {
@@ -101,7 +126,7 @@ export default function Page() {
       <section className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Upload archive</div>
-          <DropZone onFile={runOnFile} disabled={busy} />
+          <DropZone onSource={runOnSource} disabled={busy} />
         </div>
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-wide text-neutral-500">GitHub repository</div>
@@ -189,6 +214,13 @@ function Spinner() {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 
 function download(name: string, blob: Blob) {
