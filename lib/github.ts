@@ -1,3 +1,4 @@
+import { bytesHash, looksBinary } from "./archives/binary";
 import type { FileEntry } from "./cloc";
 
 export type GitHubRepo = {
@@ -108,10 +109,12 @@ export async function listGitHubFiles(repo: GitHubRepo): Promise<ListResult> {
         const res = await fetch(url);
         if (!res.ok) return null;
         const buf = new Uint8Array(await res.arrayBuffer());
-        // Quick binary detection on the bytes.
-        const max = Math.min(buf.length, 8192);
-        for (let i = 0; i < max; i++) if (buf[i] === 0) return null;
-        return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+        if (looksBinary(buf)) return null;
+        return {
+          content: new TextDecoder("utf-8", { fatal: false }).decode(buf),
+          hash: bytesHash(buf),
+          byteLength: buf.byteLength,
+        };
       },
     }));
   return { ref, truncated: tree.truncated, files };

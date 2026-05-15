@@ -2,10 +2,18 @@ import { loadCloc, type CountResult } from "@/lib/wasm/cloc";
 
 export type LineCounts = { blank: number; comment: number; code: number };
 
+/** Result of reading a file: UTF-8 decoded content, a hash of the RAW
+ * bytes, and the raw byte length. Hashing has to happen on bytes (not the
+ * lossy UTF-8 decoding) because distinct files in different legacy code
+ * pages decode to identical strings of U+FFFD. The byte length is also
+ * authoritative — cloc buckets dedup candidates by *byte* size, which can
+ * differ from `content.length` for multi-byte UTF-8 files. */
+export type ReadFile = { content: string; hash: string; byteLength: number };
+
 export type FileEntry = {
   path: string;
-  /** Lazy reader returning the file content as text. Returns null if unreadable/binary. */
-  read: () => Promise<string | null>;
+  /** Lazy reader. Returns null if unreadable/binary. */
+  read: () => Promise<ReadFile | null>;
   /** Optional pre-known byte size, used for filtering huge files. */
   size?: number;
 };
@@ -29,7 +37,10 @@ export type ClocResult = {
   skipped: { binary: number; ignored: number; tooLarge: number; unknown: number; error: number; duplicate: number; empty: number };
 };
 
-const DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MiB hard cap per file
+// cloc itself has no per-file size limit. Leave the cap off by default so
+// the totals match `cloc <dir>`; callers (e.g. the dropzone) can still pass
+// `maxFileBytes` to bound browser memory if they want.
+const DEFAULT_MAX_FILE_BYTES = Number.POSITIVE_INFINITY;
 
 export type ClocProgress = {
   processed: number;
@@ -56,22 +67,6 @@ const addCounts = (a: LineCounts, b: LineCounts): LineCounts => ({
   code: a.code + b.code,
 });
 
-const FNV_OFFSET = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const U64_MASK = 0xffffffffffffffffn;
-
-// FNV-1a 64-bit over the UTF-8 bytes of `s`. Used for cloc-style dedup —
-// same hash cloc-rs uses internally. Pure JS (no `crypto.subtle`) so it
-// works in non-secure contexts (e.g. Docker reached over plain HTTP from
-// a non-localhost address, where `crypto.subtle` is `undefined`).
-function contentHash(s: string): string {
-  const bytes = new TextEncoder().encode(s);
-  let h = FNV_OFFSET;
-  for (let i = 0; i < bytes.length; i++) {
-    h = (h ^ BigInt(bytes[i])) * FNV_PRIME & U64_MASK;
-  }
-  return h.toString(16);
-}
 
 export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Promise<ClocResult> {
   const onProgress = opts.onProgress;
@@ -84,12 +79,14 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
   const results: FileResult[] = [];
   const skipped = { binary: 0, ignored: 0, tooLarge: 0, unknown: 0, error: 0, duplicate: 0, empty: 0 };
 
-  // Phase 1: detect language for each file using path (+shebang when content can be
-  // peeked cheaply). We can only get shebang after reading, so we delay detection
-  // until the content read happens. Pre-filter by path-only rules first to avoid
-  // touching files we'll never count.
-  type Candidate = { file: FileEntry; pathLang: string | null };
-  const candidates: Candidate[] = [];
+  // Phase 1: path-only pre-filter. We defer language detection until after
+  // the content is read, because cloc disambiguates extensions like `.ts`
+  // (TypeScript vs Qt Linguist), `.m` (MATLAB/Mathematica/Obj-C/MUMPS/
+  // Mercury), `.inc`, `.d`, `.fs`, `.jl`, `pom.xml`, etc. by sniffing
+  // content. Calling `detect_language(path, null)` here would lock in the
+  // hybrid label (e.g. "TypeScript/Qt Linguist"), and the counter has no
+  // filter for that label — every non-blank line would land in `code`.
+  const candidates: FileEntry[] = [];
   for (const f of files) {
     if (wasm.is_ignored_path(f.path)) {
       skipped.ignored++;
@@ -103,8 +100,7 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
       skipped.unknown++;
       continue;
     }
-    const pathLang = wasm.detect_language(f.path, null) ?? null;
-    candidates.push({ file: f, pathLang });
+    candidates.push(f);
   }
 
   const total = candidates.length;
@@ -113,9 +109,9 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
   type Counted = {
     path: string;
     language: string;
-    content: string;
     counts: LineCounts;
     size: number;
+    hash: string;
   };
   const counted: Counted[] = [];
 
@@ -125,31 +121,28 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
       if (signal?.aborted) return;
       const i = nextIdx++;
       if (i >= candidates.length) return;
-      const { file, pathLang } = candidates[i];
+      const file = candidates[i];
       try {
-        const content = await file.read();
-        if (content === null) {
+        const result = await file.read();
+        if (result === null) {
           skipped.binary++;
-        } else if (content.length === 0) {
+        } else if (result.content.length === 0) {
           // cloc skips zero-byte files by default.
           skipped.empty++;
         } else {
-          // If detection by path failed, retry with the content head (shebang).
-          let lang = pathLang;
-          if (!lang) {
-            const head = content.slice(0, 256);
-            lang = wasm.detect_language(file.path, head) ?? null;
-          }
+          // Detect language using the FULL content so cloc's content-sniff
+          // disambiguators (TypeScript/Qt Linguist, Maven/XML, etc.) run.
+          const lang = wasm.detect_language_with_content(file.path, result.content) ?? null;
           if (!lang) {
             skipped.unknown++;
           } else {
-            const r: CountResult | null = wasm.count_with_language(lang, content);
+            const r: CountResult | null = wasm.count_with_language(lang, result.content);
             if (r) {
               counted.push({
                 path: file.path,
                 language: lang,
-                content,
-                size: content.length,
+                size: result.byteLength,
+                hash: result.hash,
                 counts: { blank: r.blank, comment: r.comment, code: r.code },
               });
             } else {
@@ -184,15 +177,17 @@ export async function clocFiles(files: FileEntry[], opts: ClocOptions = {}): Pro
         kept.push(list[0]);
         continue;
       }
-      // Bucket by content hash within the size group.
-      const hashes = list.map((c) => contentHash(c.content));
+      // Bucket by content hash within the size group. The hash is computed
+      // by the FileEntry.read() implementation over RAW BYTES — hashing the
+      // UTF-8-decoded string would collapse files with the same byte length
+      // but different legacy-codepage encodings (their lossy decodings are
+      // identical strings of U+FFFD).
       const byHash = new Map<string, Counted[]>();
-      list.forEach((c, idx) => {
-        const h = hashes[idx];
-        const sub = byHash.get(h) ?? [];
+      for (const c of list) {
+        const sub = byHash.get(c.hash) ?? [];
         sub.push(c);
-        byHash.set(h, sub);
-      });
+        byHash.set(c.hash, sub);
+      }
       for (const group of byHash.values()) {
         // cloc's different_files() keeps the alphabetically-LAST file that has
         // an identifiable language. We've already filtered to identifiable

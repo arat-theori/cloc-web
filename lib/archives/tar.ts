@@ -1,6 +1,6 @@
 import { inflate, ungzip } from "pako";
 import type { FileEntry } from "../cloc";
-import { looksBinary } from "./binary";
+import { bytesHash, looksBinary } from "./binary";
 
 const BLOCK = 512;
 const TYPEFLAG_OFFSET = 156;
@@ -92,7 +92,11 @@ export async function extractTar(buffer: ArrayBuffer, opts: { gzip?: boolean } =
       size: data.byteLength,
       read: async () => {
         if (looksBinary(data)) return null;
-        return new TextDecoder("utf-8", { fatal: false }).decode(data);
+        return {
+          content: new TextDecoder("utf-8", { fatal: false }).decode(data),
+          hash: bytesHash(data),
+          byteLength: data.byteLength,
+        };
       },
     });
   }

@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import type { FileEntry } from "../cloc";
-import { looksBinary } from "./binary";
+import { bytesHash, looksBinary } from "./binary";
 
 export async function extractZip(buffer: ArrayBuffer): Promise<FileEntry[]> {
   const zip = await JSZip.loadAsync(buffer);
@@ -12,10 +12,14 @@ export async function extractZip(buffer: ArrayBuffer): Promise<FileEntry[]> {
       size: undefined,
       read: async () => {
         try {
-          // Read as Uint8Array so we can detect binary before decoding.
+          // Read as Uint8Array so we can detect binary and hash before decoding.
           const bytes = await entry.async("uint8array");
           if (looksBinary(bytes)) return null;
-          return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          return {
+            content: new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+            hash: bytesHash(bytes),
+            byteLength: bytes.byteLength,
+          };
         } catch {
           return null;
         }

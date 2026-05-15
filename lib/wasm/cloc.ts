@@ -5,6 +5,7 @@ type WasmModule = {
   count_with_language: (language: string, content: string) => CountResult | null;
   count_file: (path: string, content: string) => CountResult | null;
   detect_language: (path: string, head?: string | null) => string | undefined;
+  detect_language_with_content: (path: string, content: string) => string | undefined;
   is_ignored_path: (path: string) => boolean;
   is_not_code: (path: string) => boolean;
 };
@@ -31,6 +32,7 @@ export function loadCloc(): Promise<WasmModule> {
         count_with_language: WasmModule["count_with_language"];
         count_file: WasmModule["count_file"];
         detect_language: WasmModule["detect_language"];
+        detect_language_with_content: WasmModule["detect_language_with_content"];
         is_ignored_path: WasmModule["is_ignored_path"];
         is_not_code: WasmModule["is_not_code"];
       };
@@ -39,6 +41,7 @@ export function loadCloc(): Promise<WasmModule> {
         count_with_language: mod.count_with_language,
         count_file: mod.count_file,
         detect_language: mod.detect_language,
+        detect_language_with_content: mod.detect_language_with_content,
         is_ignored_path: mod.is_ignored_path,
         is_not_code: mod.is_not_code,
       };
