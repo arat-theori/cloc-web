@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileEntry } from "@/lib/cloc";
-import { entriesFromDataTransfer, entriesFromFileList } from "@/lib/archives/dir";
+import { entriesFromDataTransfer } from "@/lib/archives/dir";
 
 type Source =
   | { kind: "archive"; file: File }
@@ -13,10 +13,25 @@ type Props = {
   disabled?: boolean;
 };
 
+type WithPicker = Window & {
+  showDirectoryPicker?: (opts?: { mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
+};
+
 export function DropZone({ onSource, disabled }: Props) {
   const [over, setOver] = useState(false);
+  const [folderPickerStatus, setFolderPickerStatus] = useState<"checking" | "available" | "blocked">("checking");
+  const [folderError, setFolderError] = useState<string | null>(null);
   const archiveInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // Decide once whether the modern picker even exists. We don't surface a
+  // "Browse folder" button unless it does — the legacy <input webkitdirectory>
+  // path silently truncates large trees, which would hand back wrong totals
+  // with no warning. Drag-and-drop is the safe alternative for those users.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const w = window as unknown as WithPicker;
+    setFolderPickerStatus(typeof w.showDirectoryPicker === "function" ? "available" : "blocked");
+  }, []);
 
   const handleArchiveInput = useCallback(
     (files: FileList | null) => {
@@ -26,58 +41,33 @@ export function DropZone({ onSource, disabled }: Props) {
     [onSource],
   );
 
-  const handleFolderInput = useCallback(
-    (files: FileList | null) => {
-      if (!files || files.length === 0) return;
-      const entries = entriesFromFileList(files);
-      // The first segment of webkitRelativePath is the dropped folder name.
-      const first = (files[0] as unknown as { webkitRelativePath?: string }).webkitRelativePath ?? "";
-      const rootName = first.split("/")[0] || "directory";
-      onSource({ kind: "directory", entries, rootName });
-    },
-    [onSource],
-  );
-
-  // Modern File System Access API picker. Must be called *synchronously*
-  // from the click handler so Chrome sees the user-activation token —
-  // wrapping it in an async function + `await` chain occasionally drops
-  // the activation and the API throws NotAllowedError. Returns true if
-  // we invoked the modern picker (regardless of outcome); false if it's
-  // unavailable.
-  const tryModernPicker = useCallback((): boolean => {
-    type WithPicker = Window & {
-      showDirectoryPicker?: (opts?: { mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
-    };
+  const handleBrowseFolder = useCallback(() => {
+    if (disabled) return;
+    setFolderError(null);
     const w = window as unknown as WithPicker;
-    if (typeof w.showDirectoryPicker !== "function") return false;
+    if (typeof w.showDirectoryPicker !== "function") {
+      setFolderPickerStatus("blocked");
+      return;
+    }
+    // Call synchronously from the click handler so Chrome's user-activation
+    // token is still valid. Handle the resolution via .then().
     w.showDirectoryPicker({ mode: "read" }).then(
       async (handle) => {
         const { entriesFromDirectoryHandle } = await import("@/lib/archives/dir");
         const entries = await entriesFromDirectoryHandle(handle);
-        // eslint-disable-next-line no-console
-        console.info(`[cloc-web] showDirectoryPicker enumerated ${entries.length} files`);
         onSource({ kind: "directory", entries, rootName: handle.name });
       },
       (err: unknown) => {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // eslint-disable-next-line no-console
-          console.info("[cloc-web] folder pick: user dismissed showDirectoryPicker");
-          return;
-        }
-        // eslint-disable-next-line no-console
-        console.warn("[cloc-web] folder pick: showDirectoryPicker rejected, falling back to webkitdirectory", err);
-        folderInputRef.current?.click();
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        // The browser refused: extension/policy/sandbox. Surface a clear
+        // message and direct the user to drag-and-drop instead.
+        setFolderPickerStatus("blocked");
+        setFolderError(
+          err instanceof Error ? err.message : "Folder picker is not available in this browser.",
+        );
       },
     );
-    return true;
-  }, [onSource]);
-
-  const handleBrowseFolder = useCallback(() => {
-    if (disabled) return;
-    if (tryModernPicker()) return;
-    // No modern API — use legacy webkitdirectory.
-    folderInputRef.current?.click();
-  }, [disabled, tryModernPicker]);
+  }, [disabled, onSource]);
 
   const handleDrop = useCallback(
     async (dt: DataTransfer) => {
@@ -127,16 +117,6 @@ export function DropZone({ onSource, disabled }: Props) {
         className="hidden"
         onChange={(e) => handleArchiveInput(e.target.files)}
       />
-      <input
-        ref={folderInputRef}
-        type="file"
-        // The non-standard `webkitdirectory` attribute opens a folder picker
-        // in Chromium / Firefox / Safari — typing as `any` keeps React happy.
-        {...({ webkitdirectory: "" } as Record<string, string>)}
-        multiple
-        className="hidden"
-        onChange={(e) => handleFolderInput(e.target.files)}
-      />
       <div className="flex flex-col items-center gap-3 text-center">
         <UploadIcon className="h-8 w-8 text-neutral-400 group-hover:text-neutral-200" />
         <div className="text-sm text-neutral-300">
@@ -150,17 +130,25 @@ export function DropZone({ onSource, disabled }: Props) {
           >
             Browse archive…
           </button>
-          <button
-            type="button"
-            onClick={handleBrowseFolder}
-            className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
-          >
-            Browse folder…
-          </button>
+          {folderPickerStatus === "available" ? (
+            <button
+              type="button"
+              onClick={handleBrowseFolder}
+              className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
+            >
+              Browse folder…
+            </button>
+          ) : null}
         </div>
         <div className="text-xs text-neutral-500">
           .zip · .tar · .tar.gz · .tgz · or any directory
         </div>
+        {folderError ? (
+          <div className="text-xs text-yellow-400">
+            Folder picker blocked by your browser ({folderError}). Drag the
+            folder onto this box instead.
+          </div>
+        ) : null}
       </div>
     </div>
   );

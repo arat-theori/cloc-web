@@ -26,24 +26,18 @@ function fileToEntry(file: File, path: string): FileEntry {
   };
 }
 
-/**
- * Convert a `FileList` from `<input type=file webkitdirectory>` to
- * FileEntry[]. The browser populates `webkitRelativePath` on each File so
- * we can keep the on-disk paths in the report.
- */
-export function entriesFromFileList(files: FileList): FileEntry[] {
+// Internal: convert a plain `FileList` (from a DataTransfer fallback) to
+// FileEntry[]. Used only when `webkitGetAsEntry` isn't available on the
+// drop's items; in that case we don't have directory structure, just a
+// flat list of files. We deliberately do NOT expose this — the UI no
+// longer offers `<input webkitdirectory>` because Chrome can silently
+// truncate the FileList on large trees.
+function entriesFromFileListFallback(files: FileList): FileEntry[] {
   const out: FileEntry[] = [];
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const rel = (f as unknown as { webkitRelativePath?: string }).webkitRelativePath;
     out.push(fileToEntry(f, rel && rel.length > 0 ? rel : f.name));
-  }
-  // Diagnostic: surface what the browser actually enumerated so a silently
-  // truncated FileList shows up immediately. Chrome's <input webkitdirectory>
-  // can drop files in very large trees with no error.
-  if (typeof window !== "undefined") {
-    // eslint-disable-next-line no-console
-    console.info(`[cloc-web] picker enumerated ${out.length} files`);
   }
   return out;
 }
@@ -141,29 +135,6 @@ export async function entriesFromDirectoryHandle(
 }
 
 /**
- * Open the modern directory picker if the browser supports it. Returns
- * `null` if the API is unavailable (then callers fall back to the
- * `<input webkitdirectory>` flow). Throws `AbortError` if the user
- * dismisses the picker — caller decides whether to surface that.
- */
-export async function pickDirectory(): Promise<
-  { entries: FileEntry[]; rootName: string } | null
-> {
-  type WithPicker = Window & {
-    showDirectoryPicker?: (opts?: { id?: string; mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
-  };
-  const w = (typeof window !== "undefined" ? window : null) as WithPicker | null;
-  if (!w?.showDirectoryPicker) return null;
-  const handle = await w.showDirectoryPicker({ mode: "read" });
-  const entries = await entriesFromDirectoryHandle(handle);
-  if (typeof window !== "undefined") {
-    // eslint-disable-next-line no-console
-    console.info(`[cloc-web] showDirectoryPicker enumerated ${entries.length} files`);
-  }
-  return { entries, rootName: handle.name };
-}
-
-/**
  * Best-effort: pull entries out of a DataTransfer drop. Falls back to the
  * flat `files` list if `webkitGetAsEntry` isn't available.
  *
@@ -202,7 +173,7 @@ export async function entriesFromDataTransfer(
   }
   // Fallback: plain files list (no directory info).
   if (dt.files && dt.files.length > 0) {
-    const entries = entriesFromFileList(dt.files);
+    const entries = entriesFromFileListFallback(dt.files);
     return { entries, rootName: dt.files[0].name };
   }
   return null;
