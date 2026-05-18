@@ -42,16 +42,26 @@ export function DropZone({ onSource, disabled }: Props) {
     if (disabled) return;
     // Prefer the modern File System Access API — Chrome's legacy
     // <input webkitdirectory> can silently truncate large trees.
+    const hasModern = typeof window !== "undefined"
+      && typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+    // eslint-disable-next-line no-console
+    console.info(`[cloc-web] folder pick: showDirectoryPicker available=${hasModern}`);
     try {
       const picked = await pickDirectory();
       if (picked) {
         onSource({ kind: "directory", entries: picked.entries, rootName: picked.rootName });
         return;
       }
+      // eslint-disable-next-line no-console
+      console.info("[cloc-web] folder pick: pickDirectory returned null, falling back to webkitdirectory");
     } catch (e) {
-      // User dismissed showDirectoryPicker. Treat as no-op.
-      if (e instanceof DOMException && e.name === "AbortError") return;
-      // Other errors fall through to the legacy input below.
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // eslint-disable-next-line no-console
+        console.info("[cloc-web] folder pick: user dismissed showDirectoryPicker");
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.warn("[cloc-web] folder pick: showDirectoryPicker threw, falling back to webkitdirectory", e);
     }
     folderInputRef.current?.click();
   }, [disabled, onSource]);
