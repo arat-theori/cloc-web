@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { FileEntry } from "@/lib/cloc";
-import { entriesFromDataTransfer, entriesFromFileList, pickDirectory } from "@/lib/archives/dir";
+import { entriesFromDataTransfer, entriesFromFileList } from "@/lib/archives/dir";
 
 type Source =
   | { kind: "archive"; file: File }
@@ -38,33 +38,46 @@ export function DropZone({ onSource, disabled }: Props) {
     [onSource],
   );
 
-  const handleBrowseFolder = useCallback(async () => {
-    if (disabled) return;
-    // Prefer the modern File System Access API — Chrome's legacy
-    // <input webkitdirectory> can silently truncate large trees.
-    const hasModern = typeof window !== "undefined"
-      && typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
-    // eslint-disable-next-line no-console
-    console.info(`[cloc-web] folder pick: showDirectoryPicker available=${hasModern}`);
-    try {
-      const picked = await pickDirectory();
-      if (picked) {
-        onSource({ kind: "directory", entries: picked.entries, rootName: picked.rootName });
-        return;
-      }
-      // eslint-disable-next-line no-console
-      console.info("[cloc-web] folder pick: pickDirectory returned null, falling back to webkitdirectory");
-    } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") {
+  // Modern File System Access API picker. Must be called *synchronously*
+  // from the click handler so Chrome sees the user-activation token —
+  // wrapping it in an async function + `await` chain occasionally drops
+  // the activation and the API throws NotAllowedError. Returns true if
+  // we invoked the modern picker (regardless of outcome); false if it's
+  // unavailable.
+  const tryModernPicker = useCallback((): boolean => {
+    type WithPicker = Window & {
+      showDirectoryPicker?: (opts?: { mode?: "read" }) => Promise<FileSystemDirectoryHandle>;
+    };
+    const w = window as unknown as WithPicker;
+    if (typeof w.showDirectoryPicker !== "function") return false;
+    w.showDirectoryPicker({ mode: "read" }).then(
+      async (handle) => {
+        const { entriesFromDirectoryHandle } = await import("@/lib/archives/dir");
+        const entries = await entriesFromDirectoryHandle(handle);
         // eslint-disable-next-line no-console
-        console.info("[cloc-web] folder pick: user dismissed showDirectoryPicker");
-        return;
-      }
-      // eslint-disable-next-line no-console
-      console.warn("[cloc-web] folder pick: showDirectoryPicker threw, falling back to webkitdirectory", e);
-    }
+        console.info(`[cloc-web] showDirectoryPicker enumerated ${entries.length} files`);
+        onSource({ kind: "directory", entries, rootName: handle.name });
+      },
+      (err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          // eslint-disable-next-line no-console
+          console.info("[cloc-web] folder pick: user dismissed showDirectoryPicker");
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.warn("[cloc-web] folder pick: showDirectoryPicker rejected, falling back to webkitdirectory", err);
+        folderInputRef.current?.click();
+      },
+    );
+    return true;
+  }, [onSource]);
+
+  const handleBrowseFolder = useCallback(() => {
+    if (disabled) return;
+    if (tryModernPicker()) return;
+    // No modern API — use legacy webkitdirectory.
     folderInputRef.current?.click();
-  }, [disabled, onSource]);
+  }, [disabled, tryModernPicker]);
 
   const handleDrop = useCallback(
     async (dt: DataTransfer) => {
@@ -139,7 +152,7 @@ export function DropZone({ onSource, disabled }: Props) {
           </button>
           <button
             type="button"
-            onClick={() => void handleBrowseFolder()}
+            onClick={handleBrowseFolder}
             className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-neutral-200 hover:border-neutral-500"
           >
             Browse folder…
