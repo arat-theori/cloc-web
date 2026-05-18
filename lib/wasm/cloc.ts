@@ -20,14 +20,19 @@ export type CountResult = {
 
 let modPromise: Promise<WasmModule> | null = null;
 
+// Static exports on GitHub Pages live under a project sub-path
+// (e.g. /cloc-web), so prepend the configured basePath to the WASM URLs.
+// `webpackIgnore: true` means Next doesn't rewrite the dynamic import for us.
+const BASE = (process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/$/, "");
+
 export function loadCloc(): Promise<WasmModule> {
   if (!modPromise) {
     modPromise = (async () => {
       // Dynamic import so the bundler emits a separate chunk that fetches the
-      // glue + wasm together. The path "/wasm/cloc_rs.js" is the file we
-      // copied from cloc-rs/pkg/ into the Next.js public/ dir.
-      const url = "/wasm/cloc_rs.js";
-      const mod = (await import(/* webpackIgnore: true */ url)) as {
+      // glue + wasm together. The files come from cloc-rs/pkg/ via public/wasm/.
+      const glueUrl = `${BASE}/wasm/cloc_rs.js`;
+      const wasmUrl = new URL(`${BASE}/wasm/cloc_rs_bg.wasm`, window.location.href);
+      const mod = (await import(/* webpackIgnore: true */ glueUrl)) as {
         default: (input?: string | URL) => Promise<unknown>;
         count_with_language: WasmModule["count_with_language"];
         count_file: WasmModule["count_file"];
@@ -36,7 +41,7 @@ export function loadCloc(): Promise<WasmModule> {
         is_ignored_path: WasmModule["is_ignored_path"];
         is_not_code: WasmModule["is_not_code"];
       };
-      await mod.default(new URL("/wasm/cloc_rs_bg.wasm", window.location.href));
+      await mod.default(wasmUrl);
       return {
         count_with_language: mod.count_with_language,
         count_file: mod.count_file,

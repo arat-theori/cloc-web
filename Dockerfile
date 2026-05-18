@@ -27,7 +27,7 @@ COPY . .
 RUN rm -rf public/wasm
 COPY --from=wasm-builder /build/pkg/ public/wasm/
 
-RUN npm run build
+RUN npm run build:standalone
 
 # ---------- Stage 3: Runtime ----------
 FROM node:20-alpine AS runtime

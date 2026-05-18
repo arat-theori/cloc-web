@@ -75,6 +75,34 @@ The build is three stages — `rust:1-bookworm` to compile WASM via
 build takes a few minutes (Rust cold compile); subsequent rebuilds reuse
 layer caches.
 
+## Deploy to GitHub Pages (static)
+
+The whole app runs client-side, so it static-exports cleanly. Build with
+`NEXT_TARGET=export` and upload the resulting `out/` directory.
+
+```sh
+# Make sure public/wasm/ exists first (see "Run locally" above).
+npm run build:export
+# → out/ now holds index.html, _next/, wasm/, ...
+```
+
+If the page lives at `https://<user>.github.io/<repo>/`, set the base path
+so the asset and WASM URLs resolve under that prefix:
+
+```sh
+NEXT_BASE_PATH=/<repo> npm run build:export
+```
+
+Push `out/` to the branch GitHub Pages serves (commonly `gh-pages`); for
+example:
+
+```sh
+npx gh-pages -d out -t   # `-t` keeps dotfiles
+```
+
+The Docker target still uses the Node server build via
+`npm run build:standalone`, so the two deployment targets don't conflict.
+
 ## Architecture sketch
 
 ```
